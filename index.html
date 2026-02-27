@@ -1473,6 +1473,48 @@ function fbGetLeaderboard(cb) {
 var DB = { V:[], A:[], Q:[], AT:[] };
 // Portal info cache
 var PI = {};
+
+// ── PI_DEFAULTS must be defined before boot() runs ───────────
+var PI_DEFAULTS = {
+  hero_title:       'Bridge4Change Learning Portal',
+  hero_tagline:     'Empowering changemakers through knowledge, skills & community.',
+  hero_description: 'Welcome to the official Bridge4Change Foundation learning platform — a space designed for fellows, volunteers, and partners to grow, learn, and lead change together.',
+  about_title:      'About This Portal',
+  about_text:       'The Bridge4Change Learning Portal is a curated digital library of videos, articles, and interactive quizzes focused on social impact, sustainability, climate action, and community development. Every resource has been carefully selected to support your journey as a changemaker.',
+  how_it_works:     JSON.stringify([
+    { icon:'📝', title:'Sign Up',                text:'Create your free account using your email and institution details.' },
+    { icon:'🎬', title:'Watch & Read',            text:'Explore curated videos and articles across multiple themes at your own pace.' },
+    { icon:'📝', title:'Take Quizzes',            text:'Test your understanding with quizzes after each resource and earn points.' },
+    { icon:'🏆', title:'Climb the Leaderboard',   text:'Earn points for every activity completed and compete with peers from across the country.' }
+  ]),
+  features:         JSON.stringify([
+    { icon:'🌍', title:'Social Impact Focus',   text:'All content curated around sustainability, climate, and social change.',       color:'#10B981' },
+    { icon:'🎓', title:'Self-Paced Learning',   text:'Learn anytime, anywhere — at your own pace, on any device.',                  color:'#3B82F6' },
+    { icon:'⚡', title:'Points & Rewards',      text:'Earn points for every video, article, and quiz you complete.',                color:'#F5B800' },
+    { icon:'📊', title:'Track Your Progress',   text:'Your personal dashboard shows exactly how far you have come.',               color:'#7C3AED' },
+    { icon:'🤝', title:'Peer Community',        text:'See how you rank among fellow changemakers on the leaderboard.',             color:'#EF4444' },
+    { icon:'📱', title:'Works on Any Device',   text:'Fully mobile-friendly — works on phones, tablets, and computers.',           color:'#F59E0B' }
+  ]),
+  sop_title:        'Standard Operating Procedure (SOP)',
+  sop_subtitle:     'Follow these steps to get the most out of the portal.',
+  sop_steps:        JSON.stringify([
+    { step:'01', title:'Complete Your Profile', text:'After signing up, make sure your institution and cohort details are correct.' },
+    { step:'02', title:'Start With Videos',     text:'Navigate to the Videos section. Watch each video fully before marking it as watched.' },
+    { step:'03', title:'Read All Articles',     text:'Go to the Articles section and read each article. Click "Mark Read" once done.' },
+    { step:'04', title:'Attempt Every Quiz',    text:'After watching a video or reading an article, take the associated quiz.' },
+    { step:'05', title:'Track Your Progress',   text:'Visit My Progress regularly to see your completion percentage and total points.' },
+    { step:'06', title:'Check the Leaderboard', text:'See how you compare to peers. Stay motivated and aim for Gold badge (500+ points).' }
+  ]),
+  points_guide:     JSON.stringify([
+    { action:'Watch a video',         points:'+5 pts' },
+    { action:'Read an article',       points:'+5 pts' },
+    { action:'Correct quiz answer',   points:'+10 pts (per question)' },
+    { action:'Long answer attempt',   points:'+10 pts (full marks)' }
+  ]),
+  contact_text:     'For any technical issues or questions, please reach out to your programme coordinator or email support@bridge4change.org.',
+  footer_note:      '© Bridge4Change Foundation. All rights reserved. Learning Portal v2.0.'
+};
+
 // Certificate config cache
 var CERT_CFG_DEFAULTS = {
   cert_bronze_pts:     '100',
@@ -1514,17 +1556,18 @@ var CERT_CFG = Object.assign({}, CERT_CFG_DEFAULTS);
         S.user  = r.data;
         // Merge cached attempts
         S.user.progress = safeJSON(ls('c_prog_'+r.data.email), {vw:[], ar:[]});
-        // Show GAS points initially (instant), Firebase will update them
+        // Show dashboard immediately with what we have
         updateHeaderUser();
-        // Load fresh content from GAS, then show dash
+        showPg('pg-dash');
+        // Refresh content in background
         loadContentFromGAS(function(){
-          // Override with Firebase points + progress (authoritative)
-          fbSyncUserState(S.user.email, function(){
-            updateHeaderUser(); // re-render header with Firebase points
-            showPg('pg-dash');
-            loadCertConfig(function(){ checkAndIssueTierCerts(S.user.points||0); });
-            updateCertCount();
-          });
+          renDash(); renVids(); renArts();
+          updateHeaderUser();
+          loadCertConfig(function(){ checkAndIssueTierCerts(S.user.points||0); });
+          updateCertCount();
+          if (fbOk()) {
+            fbSyncUserState(S.user.email, function(){ updateHeaderUser(); renDash(); });
+          }
         });
       } else {
         lsR('sess_tok');
@@ -1625,17 +1668,18 @@ document.getElementById('fin').addEventListener('submit', function(e) {
       progress:    safeJSON(ls('c_prog_'+r.data.email), {vw:[], ar:[]})
     };
     lsS('sess_tok', S.token);
-    // Load fresh content then go to dashboard
+    // ── Show dashboard IMMEDIATELY — don't wait for content or Firebase ──
+    updateHeaderUser();
+    showPg('pg-dash');
+    // Load fresh content in background (non-blocking)
     loadContentFromGAS(function(){
-      // Show GAS points first (instant), Firebase will override
-      updateHeaderUser();
-      // Override with Firebase points + progress (authoritative source)
-      fbSyncUserState(S.user.email, function(){
-        updateHeaderUser(); // re-render with Firebase points
-        showPg('pg-dash');
-        loadCertConfig(function(){ checkAndIssueTierCerts(S.user.points||0); });
-        updateCertCount();
-      });
+      renDash(); renVids(); renArts();
+      loadCertConfig(function(){ checkAndIssueTierCerts(S.user.points||0); });
+      updateCertCount();
+      // Sync Firebase points in background if Firebase is configured
+      if (fbOk()) {
+        fbSyncUserState(S.user.email, function(){ updateHeaderUser(); renDash(); });
+      }
     });
     loadPortalInfo();
   }).catch(function(e){
@@ -1676,16 +1720,20 @@ document.getElementById('fup').addEventListener('submit', function(e) {
 document.getElementById('fadm').addEventListener('submit', function(e) {
   e.preventDefault();
   var u=g('au').value.trim(), p=g('ap').value.trim(), err=g('adm-err');
-  var pMatch = (btoa(p)===CFG.admP)||(p===atob(CFG.admP));
-  if (u===CFG.admU && pMatch) {
+  // Support plain-text comparison as well as btoa-encoded stored passwords
+  var storedDecoded = '';
+  try { storedDecoded = atob(CFG.admP); } catch(ex) { storedDecoded = CFG.admP; }
+  var pMatch = (p === storedDecoded) || (btoa(p) === CFG.admP);
+  if (u === CFG.admU && pMatch) {
     lsS('sess_adm','1'); lsR('sess_tok'); enterAdmin();
   } else {
-    showErr(err,'Invalid admin credentials. Default: admin / admin123');
+    showErr(err,'Invalid credentials. Default: admin / admin123');
   }
 });
 
 function updateHeaderUser() {
   var u = S.user;
+  if (!u) return; // safety guard
   g('hdr-av').textContent = (u.name||'?')[0].toUpperCase();
   g('hdr-nm').textContent = u.name;
   g('hdr-pts').textContent = (u.points||0)+' pts';
@@ -2624,45 +2672,7 @@ function clrLocalCache() {
 // ============================================================
 // PORTAL INFO — About Page
 // ============================================================
-var PI_DEFAULTS = {
-  hero_title:       'Bridge4Change Learning Portal',
-  hero_tagline:     'Empowering changemakers through knowledge, skills & community.',
-  hero_description: 'Welcome to the official Bridge4Change Foundation learning platform — a space designed for fellows, volunteers, and partners to grow, learn, and lead change together.',
-  about_title:      'About This Portal',
-  about_text:       'The Bridge4Change Learning Portal is a curated digital library of videos, articles, and interactive quizzes focused on social impact, sustainability, climate action, and community development. Every resource has been carefully selected to support your journey as a changemaker.',
-  how_it_works:     JSON.stringify([
-    { icon:'📝', title:'Sign Up',                text:'Create your free account using your email and institution details.' },
-    { icon:'🎬', title:'Watch & Read',            text:'Explore curated videos and articles across multiple themes at your own pace.' },
-    { icon:'📝', title:'Take Quizzes',            text:'Test your understanding with quizzes after each resource and earn points.' },
-    { icon:'🏆', title:'Climb the Leaderboard',   text:'Earn points for every activity completed and compete with peers from across the country.' }
-  ]),
-  features:         JSON.stringify([
-    { icon:'🌍', title:'Social Impact Focus',   text:'All content curated around sustainability, climate, and social change.',       color:'#10B981' },
-    { icon:'🎓', title:'Self-Paced Learning',   text:'Learn anytime, anywhere — at your own pace, on any device.',                  color:'#3B82F6' },
-    { icon:'⚡', title:'Points & Rewards',      text:'Earn points for every video, article, and quiz you complete.',                color:'#F5B800' },
-    { icon:'📊', title:'Track Your Progress',   text:'Your personal dashboard shows exactly how far you have come.',               color:'#7C3AED' },
-    { icon:'🤝', title:'Peer Community',        text:'See how you rank among fellow changemakers on the leaderboard.',             color:'#EF4444' },
-    { icon:'📱', title:'Works on Any Device',   text:'Fully mobile-friendly — works on phones, tablets, and computers.',           color:'#F59E0B' }
-  ]),
-  sop_title:        'Standard Operating Procedure (SOP)',
-  sop_subtitle:     'Follow these steps to get the most out of the portal.',
-  sop_steps:        JSON.stringify([
-    { step:'01', title:'Complete Your Profile', text:'After signing up, make sure your institution and cohort details are correct.' },
-    { step:'02', title:'Start With Videos',     text:'Navigate to the Videos section. Watch each video fully before marking it as watched.' },
-    { step:'03', title:'Read All Articles',     text:'Go to the Articles section and read each article. Click "Mark Read" once done.' },
-    { step:'04', title:'Attempt Every Quiz',    text:'After watching a video or reading an article, take the associated quiz.' },
-    { step:'05', title:'Track Your Progress',   text:'Visit My Progress regularly to see your completion percentage and total points.' },
-    { step:'06', title:'Check the Leaderboard', text:'See how you compare to peers. Stay motivated and aim for Gold badge (500+ points).' }
-  ]),
-  points_guide:     JSON.stringify([
-    { action:'Watch a video',         points:'+5 pts' },
-    { action:'Read an article',       points:'+5 pts' },
-    { action:'Correct quiz answer',   points:'+10 pts (per question)' },
-    { action:'Long answer attempt',   points:'+10 pts (full marks)' }
-  ]),
-  contact_text:     'For any technical issues or questions, please reach out to your programme coordinator or email support@bridge4change.org.',
-  footer_note:      '© Bridge4Change Foundation. All rights reserved. Learning Portal v2.0.'
-};
+// PI_DEFAULTS is already defined above (before boot) — no duplicate needed here.
 
 function loadPortalInfo(cb) {
   // Use local cache instantly, then refresh from server
