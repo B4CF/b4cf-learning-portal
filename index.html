@@ -1493,7 +1493,7 @@ textarea { resize:vertical; min-height:76px; }
 // This makes the portal work on ALL devices without any setup.
 // Example: 'https://script.google.com/macros/s/AKfy.../exec'
 // ============================================================
-var HARDCODED_GAS_URL = 'https://script.google.com/macros/s/AKfycbyae9MQ5f_DvcIlHGl4rJyreua7FMrPxUdoSjzEj6QD0UnNROaPsMX0ICOz9ie9kFU/exec';  // ← PASTE YOUR URL BETWEEN THESE QUOTES
+var HARDCODED_GAS_URL = 'https://script.google.com/macros/s/AKfycbxqkAyTLS1xktcrAwBIudrlSfsZAmaKikYo8l5zGIUU_xhlzywIk6lkWarHWO1P9FgnQA/exec';  // ← PASTE YOUR URL BETWEEN THESE QUOTES
 
 var PI_DEFAULTS = {
   hero_title:       'Bridge4Change Learning Portal',
@@ -1536,7 +1536,9 @@ var PI_DEFAULTS = {
 };
 
 
-var CFG = { gas:'', admU:'admin', admP:btoa('admin123') };
+var CFG = { gas:'', admU:'admin', admP:'admin123' };
+// Note: admP stores password in plain text locally — this is only for the
+// local admin panel access check. The GAS backend has its own secure auth.
 // Session: token stored in localStorage, user data in memory
 var S = { user:null, token:null, isAdmin:false };
 
@@ -1730,7 +1732,7 @@ var CERT_CFG = Object.assign({}, CERT_CFG_DEFAULTS);
   // Priority: localStorage (admin may update it) → hardcoded fallback
   CFG.gas  = ls('gas') || HARDCODED_GAS_URL || '';
   CFG.admU = ls('admU') || 'admin';
-  var sp = ls('admP'); if (sp) { try { atob(sp); CFG.admP=sp; } catch(e){} }
+  var sp = ls('admP'); if (sp) { CFG.admP=sp; }
 
   // Load content from localStorage cache (instant display)
   DB.V  = safeJSON(ls('c_v'),  []);
@@ -1848,7 +1850,7 @@ document.getElementById('fin').addEventListener('submit', function(e) {
   err.classList.add('hidden');
 
   if (!CFG.gas) {
-    showErr(err, 'Portal not configured yet. Please contact the admin to set the Google Sheets URL in Settings.');
+    showErr(err, '⚠️ Google Sheets URL not configured. Open the Admin panel → Settings and paste your Google Apps Script URL, then try again.');
     return;
   }
 
@@ -1857,7 +1859,11 @@ document.getElementById('fin').addEventListener('submit', function(e) {
   gasPost('LOGIN', {email:email, password:pass}).then(function(r){
     btn.disabled=false; btn.textContent='Sign In';
     if (!r || !r.success) {
-      showErr(err, (r && r.message) || 'Login failed. Please try again.');
+      var msg = (r && r.message) || 'Login failed. Please try again.';
+      if (msg.indexOf('Unknown action') > -1) {
+        msg = '❌ GAS deployment issue: "'+msg+'". Go to Admin → Settings and re-save your GAS URL, or re-deploy your Google Apps Script.';
+      }
+      showErr(err, msg);
       return;
     }
     // Store token for cross-device persistence
@@ -1922,7 +1928,7 @@ document.getElementById('fup').addEventListener('submit', function(e) {
 document.getElementById('fadm').addEventListener('submit', function(e) {
   e.preventDefault();
   var u=g('au').value.trim(), p=g('ap').value.trim(), err=g('adm-err');
-  var pMatch = (btoa(p)===CFG.admP)||(p===atob(CFG.admP));
+  var pMatch = (p === CFG.admP);
   if (u===CFG.admU && pMatch) {
     lsS('sess_adm','1'); lsR('sess_tok'); enterAdmin();
   } else {
@@ -2851,12 +2857,12 @@ function saveAdmCreds() {
   var u=g('st-au').value.trim(), p=g('st-ap').value.trim();
   if (!u) { alert('Username required.'); return; }
   CFG.admU=u; lsS('admU',u);
-  if (p) { CFG.admP=btoa(p); lsS('admP',btoa(p)); }
+  if (p) { CFG.admP=p; lsS('admP',p); }
   toast('Admin credentials updated!');
 }
 function resetAdmCreds() {
   lsR('admU'); lsR('admP');
-  CFG.admU='admin'; CFG.admP=btoa('admin123');
+  CFG.admU='admin'; CFG.admP='admin123';
   alert('Admin credentials reset!\nUsername: admin\nPassword: admin123');
 }
 function clrLocalCache() {
@@ -3582,9 +3588,17 @@ function migrateFb() {
 // ============================================================
 function gasGet(action, qs) {
   if (!CFG.gas) return Promise.resolve(null);
-  var url = CFG.gas + '?action='+encodeURIComponent(action)+(qs?'&'+qs:'');
+  var url = CFG.gas + (action ? '?action='+encodeURIComponent(action) : '') + (qs?'&'+qs:'');
   return fetch(url, {method:'GET', mode:'cors'})
-    .then(function(r){ return r.json(); })
+    .then(function(r){
+      return r.text().then(function(txt){
+        try { return JSON.parse(txt); }
+        catch(e) {
+          console.warn('GAS GET non-JSON:', txt.substring(0,200));
+          return null;
+        }
+      });
+    })
     .catch(function(e){ console.warn('GAS GET error:', e); return null; });
 }
 
@@ -3595,10 +3609,23 @@ function gasPost(action, data, token) {
   return fetch(CFG.gas, {
     method:'POST',
     mode:'cors',
-    headers:{'Content-Type':'text/plain'}, // text/plain avoids CORS preflight on GAS
+    // text/plain avoids CORS preflight — GAS handles it as a simple request
+    headers:{'Content-Type':'text/plain'},
     body: JSON.stringify(body)
-  }).then(function(r){ return r.json(); })
-    .catch(function(e){ console.warn('GAS POST error:', e); return null; });
+  }).then(function(r){
+    // GAS can return HTML redirect pages on auth errors — detect and handle
+    var ct = r.headers.get('content-type') || '';
+    if (ct.indexOf('html') > -1) {
+      return {success:false, message:'GAS deployment error: received HTML instead of JSON. Check that your GAS is deployed with "Execute as: Me" and "Who has access: Anyone".'};
+    }
+    return r.text().then(function(txt){
+      try { return JSON.parse(txt); }
+      catch(e) {
+        console.warn('GAS POST non-JSON response:', txt.substring(0,200));
+        return {success:false, message:'Server returned invalid response. Please check GAS deployment settings.'};
+      }
+    });
+  }).catch(function(e){ console.warn('GAS POST error:', e); return null; });
 }
 
 // ============================================================
