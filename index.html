@@ -1493,7 +1493,7 @@ textarea { resize:vertical; min-height:76px; }
 // This makes the portal work on ALL devices without any setup.
 // Example: 'https://script.google.com/macros/s/AKfy.../exec'
 // ============================================================
-var HARDCODED_GAS_URL = 'https://script.google.com/macros/s/AKfycbxqkAyTLS1xktcrAwBIudrlSfsZAmaKikYo8l5zGIUU_xhlzywIk6lkWarHWO1P9FgnQA/exec';  // ← PASTE YOUR URL BETWEEN THESE QUOTES
+var HARDCODED_GAS_URL = 'https://script.google.com/macros/s/AKfycbyae9MQ5f_DvcIlHGl4rJyreua7FMrPxUdoSjzEj6QD0UnNROaPsMX0ICOz9ie9kFU/exec';  // ← PASTE YOUR URL BETWEEN THESE QUOTES
 
 var PI_DEFAULTS = {
   hero_title:       'Bridge4Change Learning Portal',
@@ -1536,7 +1536,7 @@ var PI_DEFAULTS = {
 };
 
 
-var CFG = { gas:'', admU:'admin', admP:'outreach2025' };
+var CFG = { gas:'', admU:'admin', admP:'admin123' };
 // Note: admP stores password in plain text locally — this is only for the
 // local admin panel access check. The GAS backend has its own secure auth.
 // Session: token stored in localStorage, user data in memory
@@ -1742,36 +1742,24 @@ var CERT_CFG = Object.assign({}, CERT_CFG_DEFAULTS);
   PI    = safeJSON(ls('c_pi'), Object.assign({}, PI_DEFAULTS)); // portal info cache
   CERT_CFG = safeJSON(ls('cert_cfg'), Object.assign({}, CERT_CFG_DEFAULTS)); // cert config
 
-  var tok = ls('sess_tok');
   var sessAdmin = ls('sess_adm');
-
   if (sessAdmin === '1') { enterAdmin(); return; }
 
-  if (tok && CFG.gas) {
-    // Validate token with server → restore session across devices
-    gasGet('VALIDATE_TOKEN', 'token='+encodeURIComponent(tok)).then(function(r){
-      if (r && r.success && r.data) {
-        S.token = tok;
-        S.user  = r.data;
-        // Merge cached attempts
-        S.user.progress = safeJSON(ls('c_prog_'+r.data.email), {vw:[], ar:[]});
-        // Show GAS points initially (instant), Firebase will update them
+  // LOCAL AUTH — restore session from localStorage (no server call needed)
+  var savedUser = safeJSON(ls('sess_user'), null);
+  if (savedUser && savedUser.email) {
+    S.user = savedUser;
+    S.user.progress = safeJSON(ls('c_prog_'+savedUser.email), {vw:[], ar:[]});
+    updateHeaderUser();
+    loadContentFromGAS(function(){
+      fbSyncUserState(S.user.email, function(){
         updateHeaderUser();
-        // Load fresh content from GAS, then show dash
-        loadContentFromGAS(function(){
-          // Override with Firebase points + progress (authoritative)
-          fbSyncUserState(S.user.email, function(){
-            updateHeaderUser(); // re-render header with Firebase points
-            showPg('pg-dash');
-            loadCertConfig(function(){ checkAndIssueTierCerts(S.user.points||0); });
-            updateCertCount();
-          });
-        });
-      } else {
-        lsR('sess_tok');
-        showPg('pg-auth');
-      }
-    }).catch(function(){ showPg('pg-auth'); });
+        showPg('pg-dash');
+        loadCertConfig(function(){ checkAndIssueTierCerts(S.user.points||0); });
+        updateCertCount();
+      });
+    });
+    loadPortalInfo();
   } else {
     showPg('pg-auth');
   }
@@ -1856,44 +1844,28 @@ document.getElementById('fin').addEventListener('submit', function(e) {
 
   btn.disabled=true; btn.textContent='Signing in…';
 
-  gasPost('LOGIN', {email:email, password:pass}).then(function(r){
-    btn.disabled=false; btn.textContent='Sign In';
-    if (!r || !r.success) {
-      var msg = (r && r.message) || 'Login failed. Please try again.';
-      if (msg.indexOf('Unknown action') > -1) {
-        msg = '❌ GAS deployment issue: "'+msg+'". Go to Admin → Settings and re-save your GAS URL, or re-deploy your Google Apps Script.';
-      }
-      showErr(err, msg);
-      return;
-    }
-    // Store token for cross-device persistence
-    S.token = r.data.token;
-    S.user  = {
-      email:       r.data.email,
-      name:        r.data.name,
-      institution: r.data.institution,
-      cohort:      r.data.cohort,
-      points:      r.data.points || 0,
-      progress:    safeJSON(ls('c_prog_'+r.data.email), {vw:[], ar:[]})
-    };
-    lsS('sess_tok', S.token);
-    // Load fresh content then go to dashboard
-    loadContentFromGAS(function(){
-      // Show GAS points first (instant), Firebase will override
+  // LOCAL AUTH — no server needed
+  var users = safeJSON(ls('users'), []);
+  var user  = users.find(function(u){ return u.email === email; });
+  if (!user) { showErr(err, 'No account found with this email. Please sign up first.'); return; }
+  if (user.password !== pass) { showErr(err, 'Incorrect password. Please try again.'); return; }
+
+  S.user = { email:user.email, name:user.name, institution:user.institution||'', cohort:user.cohort||'Not specified', points:user.points||0, progress:safeJSON(ls('c_prog_'+user.email), {vw:[], ar:[]}) };
+  lsS('sess_user', S.user);
+
+  // Log to GAS sheet in background (won't block login if it fails)
+  if (CFG.gas) gasPost('USER_LOGIN', {email:email, name:user.name, loginTime:new Date().toISOString()}).catch(function(){});
+
+  loadContentFromGAS(function(){
+    updateHeaderUser();
+    fbSyncUserState(S.user.email, function(){
       updateHeaderUser();
-      // Override with Firebase points + progress (authoritative source)
-      fbSyncUserState(S.user.email, function(){
-        updateHeaderUser(); // re-render with Firebase points
-        showPg('pg-dash');
-        loadCertConfig(function(){ checkAndIssueTierCerts(S.user.points||0); });
-        updateCertCount();
-      });
+      showPg('pg-dash');
+      loadCertConfig(function(){ checkAndIssueTierCerts(S.user.points||0); });
+      updateCertCount();
     });
-    loadPortalInfo();
-  }).catch(function(e){
-    btn.disabled=false; btn.textContent='Sign In';
-    showErr(err, 'Connection error. Check your internet and try again.');
   });
+  loadPortalInfo();
 });
 
 // ── SIGN UP ──────────────────────────────────────────────────
@@ -1903,25 +1875,28 @@ document.getElementById('fup').addEventListener('submit', function(e) {
   var pass  = g('up-p').value, inst = g('ui').value.trim(), cohort = g('uc').value.trim()||'Not specified';
   var err   = g('up-err'), btn = g('up-btn');
 
-  if (!CFG.gas) {
-    showErr(err, 'Please ask the admin to configure the Google Sheets URL first.');
-    return;
-  }
+  if (!name) { showErr(err, 'Please enter your full name.'); return; }
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { showErr(err, 'Please enter a valid email.'); return; }
   if (pass.length < 6) { showErr(err, 'Password must be at least 6 characters.'); return; }
+  if (!inst) { showErr(err, 'Please enter your institution.'); return; }
+
+  // LOCAL AUTH — save to localStorage
+  var users = safeJSON(ls('users'), []);
+  if (users.find(function(u){ return u.email === email; })) {
+    showErr(err, 'An account with this email already exists. Please sign in.'); return;
+  }
 
   btn.disabled=true; btn.textContent='Creating…';
 
-  gasPost('SIGNUP', {name:name, email:email, password:pass, institution:inst, cohort:cohort}).then(function(r){
-    btn.disabled=false; btn.textContent='Create Account';
-    if (!r || !r.success) {
-      showErr(err, (r && r.message) || 'Sign up failed.');
-      return;
-    }
-    toast('Account created! Please sign in.'); atab('in'); g('ie').value=email;
-  }).catch(function(e){
-    btn.disabled=false; btn.textContent='Create Account';
-    showErr(err, 'Connection error. Please try again.');
-  });
+  var newUser = { email:email, name:name, password:pass, institution:inst, cohort:cohort, points:0, registeredAt:new Date().toISOString() };
+  users.push(newUser);
+  lsS('users', users);
+
+  // Log to GAS sheet in background
+  if (CFG.gas) gasPost('USER_REGISTRATION', {email:email, name:name, password:pass, institution:inst, cohort:cohort, registeredAt:newUser.registeredAt}).catch(function(){});
+
+  btn.disabled=false; btn.textContent='Create Account';
+  toast('Account created! Please sign in.'); atab('in'); g('ie').value=email;
 });
 
 // ── ADMIN LOGIN ───────────────────────────────────────────────
@@ -1948,9 +1923,8 @@ function updateHeaderUser() {
 
 function logout() {
   if (!confirm('Logout?')) return;
-  if (S.token && CFG.gas) gasPost('LOGOUT', {}, S.token).catch(function(){});
   S.user=null; S.token=null;
-  lsR('sess_tok'); lsR('sess_adm');
+  lsR('sess_user'); lsR('sess_adm');
   g('hdr-r').classList.remove('show'); showPg('pg-auth');
 }
 
@@ -1987,11 +1961,12 @@ function doReset() {
   if (!email||!p1||!p2) { msg.innerHTML='<div class="alert err">Please fill all fields.</div>'; return; }
   if (p1!==p2) { msg.innerHTML='<div class="alert err">Passwords do not match.</div>'; return; }
   if (p1.length<6) { msg.innerHTML='<div class="alert err">Password too short (min 6).</div>'; return; }
-  if (!CFG.gas) { msg.innerHTML='<div class="alert err">GAS URL not configured.</div>'; return; }
-  gasPost('PASSWORD_RESET_REQUEST', {email:email, newPassword:p1}).then(function(r){
-    if (r && r.success) msg.innerHTML='<div class="alert ok">✅ '+(r.message||'Password updated! You can now sign in.')+'</div>';
-    else msg.innerHTML='<div class="alert err">'+(r&&r.message||'Reset failed.')+'</div>';
-  }).catch(function(){ msg.innerHTML='<div class="alert err">Connection error.</div>'; });
+  var users = safeJSON(ls('users'), []);
+  var idx = users.findIndex(function(u){ return u.email===email; });
+  if (idx<0) { msg.innerHTML='<div class="alert err">No account found with that email.</div>'; return; }
+  users[idx].password = p1;
+  lsS('users', users);
+  msg.innerHTML='<div class="alert ok">✅ Password updated! You can now sign in.</div>';
 }
 
 // ============================================================
@@ -2106,8 +2081,8 @@ function markW(id) {
   renVids(); renDash();
 
   // ALWAYS write to GAS (keeps Google Sheet in sync)
-  if (S.token && CFG.gas) {
-    gasPost('VIDEO_WATCHED',{videoId:id,videoTitle:v?v.title:'',institution:u.institution,cohort:u.cohort}, S.token)
+  if (CFG.gas) {
+    gasPost('VIDEO_WATCHED',{email:u.email,name:u.name||'',videoId:id,videoTitle:v?v.title:'',institution:u.institution,cohort:u.cohort,timestamp:new Date().toISOString()})
       .catch(function(e){ console.warn('GAS video sync err',e); });
   }
 
@@ -2128,8 +2103,13 @@ function markW(id) {
       }
     });
   } else {
-    // No Firebase — use GAS points (already sent above)
+    // No Firebase — add points locally
     u.points = (u.points||0)+5;
+    lsS('sess_user', S.user);
+    // Update users array in localStorage
+    var users = safeJSON(ls('users'), []);
+    var idx = users.findIndex(function(x){ return x.email===u.email; });
+    if (idx>=0) { users[idx].points = u.points; lsS('users', users); }
     g('hdr-pts').textContent = u.points+' pts';
   }
 }
@@ -2179,8 +2159,8 @@ function markR(id) {
   renArts(); renDash();
 
   // ALWAYS write to GAS (keeps Google Sheet in sync)
-  if (S.token && CFG.gas) {
-    gasPost('ARTICLE_READ',{articleId:id,articleTitle:a?a.title:'',institution:u.institution,cohort:u.cohort}, S.token)
+  if (CFG.gas) {
+    gasPost('ARTICLE_READ',{email:u.email,name:u.name||'',articleId:id,articleTitle:a?a.title:'',institution:u.institution,cohort:u.cohort,timestamp:new Date().toISOString()})
       .catch(function(e){ console.warn('GAS article sync err',e); });
   }
 
@@ -2424,7 +2404,7 @@ function finishQz() {
   g('hdr-pts').textContent=u.points+' pts';
 
   // ALWAYS write quiz result to GAS (keeps Google Sheet in sync)
-  if (S.token && CFG.gas) {
+  if (CFG.gas) {
     gasPost('QUIZ_COMPLETED',{
       quizId:qz.id, quizTitle:qz.title, score:cor, total:tot, pointsEarned:earnedPts,
       longAnswers:QS.ans.map(function(a,i){ return (qz.qs[i]&&qz.qs[i].type==='long')?(a&&a.text||''):null; })
@@ -2517,15 +2497,19 @@ function renAdmOv() {
 
 // ── Admin Students ────────────────────────────────────────────
 function loadAdmStudents() {
-  if (!CFG.gas) { renUsers(); return; }
-  g('u-loading').classList.remove('hidden');
-  gasGet('GET_LEADERBOARD','t='+Date.now()).then(function(r){
-    g('u-loading').classList.add('hidden');
-    if (r&&r.success&&Array.isArray(r.data)) {
-      admStudents = r.data;
-      renUsers(); renAdmOv();
-    }
-  }).catch(function(){ g('u-loading').classList.add('hidden'); });
+  // Primary source: localStorage users
+  var localUsers = safeJSON(ls('users'), []);
+  if (localUsers.length) {
+    admStudents = localUsers.map(function(u){ return {email:u.email,name:u.name,institution:u.institution||'',cohort:u.cohort||'',points:u.points||0}; });
+    renUsers(); renAdmOv();
+  }
+  // Also try GAS leaderboard to get latest points
+  if (CFG.gas) {
+    gasGet('GET_LEADERBOARD','t='+Date.now()).then(function(r){
+      if (r&&r.success&&Array.isArray(r.data)&&r.data.length) { admStudents=r.data; renUsers(); renAdmOv(); }
+    }).catch(function(){});
+  }
+  if (!localUsers.length && !CFG.gas) renUsers();
 }
 
 function renUsers() {
