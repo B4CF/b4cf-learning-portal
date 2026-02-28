@@ -703,10 +703,27 @@ a{color:var(--gold);text-decoration:none}
 
 <!-- ── ADMIN LOGIN ── -->
 <div id="pg-adm-login" class="pg">
-  <div class="adm-login-card">
+  <div class="adm-login-card" style="max-width:440px">
     <h2>🛡 Admin Panel</h2>
     <p>Manage content, quizzes, and learners</p>
-    <div class="fg"><label>Admin Password</label><input id="ap" type="password" placeholder="Enter password"></div>
+
+    <!-- STEP 1: API URL — must be set first -->
+    <div style="background:var(--snow);border:1.5px solid var(--border);border-radius:var(--r-sm);padding:1rem;margin-bottom:1.2rem">
+      <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:.5rem">Step 1 — Connect Backend</div>
+      <div class="fg" style="margin-bottom:.5rem">
+        <label>Apps Script URL</label>
+        <input id="adm-api-url-login" type="url" placeholder="https://script.google.com/macros/s/…/exec">
+      </div>
+      <div style="display:flex;gap:.5rem;align-items:center">
+        <button class="btn btn-secondary btn-sm" onclick="saveApiUrlFromLogin()" style="flex-shrink:0">Save & Test</button>
+        <span id="api-status-login" style="font-size:.75rem;color:var(--muted)">Not configured</span>
+      </div>
+      <p style="font-size:.7rem;color:var(--muted);margin-top:.5rem;line-height:1.5">Deploy your <code>Code.gs</code> as a Web App in Google Apps Script, then paste the URL above.</p>
+    </div>
+
+    <!-- STEP 2: Password -->
+    <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:.5rem">Step 2 — Enter Password</div>
+    <div class="fg"><label>Admin Password</label><input id="ap" type="password" placeholder="Default: admin1234"></div>
     <div id="adm-err" class="alert alert-err hidden"></div>
     <button class="btn btn-dark" style="width:100%;padding:.85rem" onclick="doAdminLogin()">Login to Admin →</button>
     <div style="margin-top:.8rem;text-align:center">
@@ -1409,6 +1426,28 @@ function goAdminLogin(){
   document.querySelectorAll('.pg').forEach(p=>{p.style.display='none';p.classList.remove('on');});
   g('pg-adm-login').style.display='flex';
   g('pg-adm-login').classList.add('on');
+  // Pre-fill existing URL if saved
+  const existing = getApiUrl();
+  if(existing) {
+    g('adm-api-url-login').value = existing;
+    g('api-status-login').textContent = '✅ URL saved';
+    g('api-status-login').style.color = 'var(--green)';
+  }
+}
+async function saveApiUrlFromLogin() {
+  const url = g('adm-api-url-login').value.trim();
+  if(!url){ g('api-status-login').textContent='⚠️ Paste a URL first'; g('api-status-login').style.color='var(--red)'; return; }
+  localStorage.setItem(LS_API, url);
+  g('api-status-login').textContent = '🔄 Testing…';
+  g('api-status-login').style.color = 'var(--muted)';
+  try {
+    const res = await apiGet('ping');
+    g('api-status-login').textContent = '✅ Connected! Ready to log in.';
+    g('api-status-login').style.color = 'var(--green)';
+  } catch(e) {
+    g('api-status-login').textContent = '❌ Cannot reach backend: '+e.message;
+    g('api-status-login').style.color = 'var(--red)';
+  }
 }
 async function doAdminLogin() {
   const pass = g('ap').value.trim();
