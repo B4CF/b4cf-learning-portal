@@ -518,8 +518,8 @@ a{color:var(--navy2)}
 
 <!-- GAS BANNER -->
 <div id="gas-banner">
-  ⚠️ Google Sheets not configured — progress won't sync across devices.
-  <a href="#" onclick="openGasSetting();return false">Set up now</a>
+  ⚠️ Offline mode — your progress is saved on this device only.
+  Contact your programme admin to enable cross-device sync.
 </div>
 
 <!-- NAV -->
@@ -802,7 +802,12 @@ a{color:var(--navy2)}
 // ── Works 100% on GitHub Pages.
 // ════════════════════════════════════════════════════════════════
 
-var GAS = ''; // Google Apps Script URL
+// ═══════════════════════════════════════════════════════
+// ADMIN: PASTE YOUR GOOGLE APPS SCRIPT URL BELOW (between the quotes)
+// Get this URL from: Google Sheet → Extensions → Apps Script → Deploy
+// After pasting, re-upload this file to GitHub Pages
+// ═══════════════════════════════════════════════════════
+var GAS = 'https://script.google.com/macros/s/AKfycbxPeqkRogzfPlakQd2BJnx2F3KsL8s8Zwye4X99xOMmQekcUyEUGH7C9amiiFRPNfEj/exec'; // ← PASTE YOUR URL HERE e.g. 'https://script.google.com/macros/s/ABC.../exec'
 var S   = { user: null, isAdmin: false };
 var DB  = { vids: [], arts: [], quizzes: [] };
 var CFG = {
@@ -818,7 +823,8 @@ function sj(s,d)  { try { return JSON.parse(s||'null')||d; } catch(e){ return d;
 
 // ── BOOT ─────────────────────────────────────────────────────────
 (function boot() {
-  GAS = ls('gas') || '';
+  // GAS is hardcoded above. Admin can also override via localStorage (set in Admin panel)
+  GAS = ls('gas') || GAS;
   var savedCFG = sj(ls('cfg'), null);
   if (savedCFG) { CFG = savedCFG; if (!CFG.cert) CFG.cert = { br:100, si:300, go:500, pl:1000 }; }
 
@@ -967,6 +973,7 @@ function enterStudent() {
   g('hdr-pts').textContent   = (S.user.totalPts||0)+' pts';
   g('hdr-user').style.display='flex';
   g('nav').style.display     ='flex';
+  // Banner only shown if GAS not configured at all
   if (!GAS) g('gas-banner').style.display='block';
   showPage('pg-dash');
   renDash();
@@ -996,8 +1003,8 @@ function renDash() {
 
   g('d-hi').textContent  = 'Hello, '+u.name.split(' ')[0]+'! 👋';
   g('d-pts').textContent = (u.totalPts||0)+' pts';
-  g('dv').textContent    = vw.length+'<span style="font-size:.75rem;color:var(--muted);font-family:Inter">/'+DB.vids.length+'</span>';
-  g('da').textContent    = ar.length+'<span style="font-size:.75rem;color:var(--muted);font-family:Inter">/'+DB.arts.length+'</span>';
+  g('dv').innerHTML      = vw.length+'<span style="font-size:.7rem;color:var(--muted);font-family:Inter,sans-serif">/'+DB.vids.length+'</span>';
+  g('da').innerHTML      = ar.length+'<span style="font-size:.7rem;color:var(--muted);font-family:Inter,sans-serif">/'+DB.arts.length+'</span>';
   g('dq').textContent    = qp.length;
   g('dpct').textContent  = pct+'%';
   g('dbar').style.width  = pct+'%';
