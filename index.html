@@ -742,9 +742,13 @@ a{color:var(--navy2)}
             <div class="fg"><label>Signatory Name</label><input id="csn" value="Programme Director"></div>
             <div class="fg"><label>Signatory Title</label><input id="cst" value="Bridge4Change Foundation"></div>
           </div>
-          <div style="display:flex;gap:.45rem;flex-wrap:wrap">
-            <button class="bp sm" onclick="saveCertCfg()">💾 Save</button>
+          <div style="background:#EBF4FF;border:1px solid #BDD7F5;border-radius:8px;padding:.6rem .85rem;margin-bottom:.6rem;font-size:.78rem;color:#1E3A5F">
+            ☁️ <strong>Settings sync via Google Sheets.</strong> Save here → instantly updated on <em>all</em> student devices. No re-upload needed.
+          </div>
+          <div style="display:flex;gap:.45rem;flex-wrap:wrap;align-items:center">
+            <button class="bp sm" onclick="saveCertCfg()">💾 Save to Sheets</button>
             <button class="bg sm" onclick="previewSampleCert('gold')">Preview Gold Cert</button>
+            <span id="cert-save-status" style="font-size:.75rem;color:var(--muted);margin-left:.25rem"></span>
           </div>
         </div>
       </div>
@@ -779,7 +783,6 @@ a{color:var(--navy2)}
   <div id="certwrap"></div>
   <div class="cert-acts">
     <button class="bgold sm" id="dlbtn" onclick="downloadCert()">⬇️ Download PNG</button>
-    <button class="bg sm" style="border-color:rgba(255,255,255,.3);color:#fff" onclick="printCert()">🖨️ Print</button>
     <button class="bg sm" style="border-color:rgba(255,255,255,.3);color:#fff" onclick="closeCertOv()">✕ Close</button>
   </div>
 </div>
@@ -826,7 +829,7 @@ function sj(s,d)  { try { return JSON.parse(s||'null')||d; } catch(e){ return d;
 
 // ── BOOT ─────────────────────────────────────────────────────────
 (function boot() {
-  // GAS is hardcoded above. Admin can also override via localStorage (set in Admin panel)
+  // GAS URL — hardcoded at deploy time, or overridden via localStorage
   GAS = ls('gas') || GAS;
   var savedCFG = sj(ls('cfg'), null);
   if (savedCFG) { CFG = savedCFG; if (!CFG.cert) CFG.cert = { br:100, si:300, go:500, pl:1000 }; }
@@ -835,22 +838,22 @@ function sj(s,d)  { try { return JSON.parse(s||'null')||d; } catch(e){ return d;
   DB.arts    = sj(ls('c_a'), []);
   DB.quizzes = sj(ls('c_q'), []);
 
+  // Always fetch settings from GAS first — cert thresholds, org name etc.
+  // This makes admin changes in Google Sheets instantly live on ALL devices
+  if (GAS) fetchSettingsFromGAS();
+
   if (ls('sess_adm')==='1') { enterAdmin(); return; }
 
   var u = sj(ls('sess_user'), null);
   if (u && u.email) {
     S.user = u;
     enterStudent();
-    if (GAS) {
-      // Re-register + sync on every session restore (handles cross-device)
-      registerAndSync();
-      loadContent();
-    }
+    if (GAS) { registerAndSync(); loadContent(); }
     return;
   }
 
   showPage('pg-welcome');
-  if (GAS) loadContent(); // preload content in background
+  if (GAS) loadContent();
 })();
 
 // ── PAGE ROUTING ─────────────────────────────────────────────────
@@ -1033,10 +1036,13 @@ function startLearning() {
 
   if (!GAS) { g('gas-banner').style.display='block'; return; }
 
-  // Single call: register + fetch progress in one round-trip
+  // Fetch latest settings (cert thresholds) from GAS
+  fetchSettingsFromGAS();
+
+  // Register + sync progress
   registerAndSync();
 
-  // Load content library in parallel
+  // Load content library
   loadContent();
 }
 
@@ -1054,6 +1060,33 @@ function enterStudent() {
 
 function updateHeader() {
   g('hdr-pts').textContent = (S.user.totalPts||0)+' pts';
+}
+
+// Fetches cert thresholds + org settings from Google Sheets.
+// Called on every page load → admin changes are live on ALL devices immediately.
+function fetchSettingsFromGAS() {
+  if (!GAS) return;
+  gasGet('GET_SETTINGS').then(function(r) {
+    if (!r || !r.success || !r.data) {
+      console.warn('fetchSettingsFromGAS: no response, using cached/default settings');
+      return;
+    }
+    var d = r.data;
+    // Google Sheets is authoritative for these settings
+    CFG.cert.br  = d.certBronze      || CFG.cert.br  || 100;
+    CFG.cert.si  = d.certSilver      || CFG.cert.si  || 300;
+    CFG.cert.go  = d.certGold        || CFG.cert.go  || 500;
+    CFG.cert.pl  = d.certPlat        || CFG.cert.pl  || 1000;
+    CFG.cert.org = d.orgName         || CFG.cert.org || 'Bridge4Change Foundation';
+    CFG.cert.sn  = d.signatoryName   || CFG.cert.sn  || 'Programme Director';
+    CFG.cert.st  = d.signatoryTitle  || CFG.cert.st  || 'Bridge4Change Foundation';
+    lsS('cfg', CFG); // cache as fallback for offline
+    console.log('Settings synced from GAS:', CFG.cert.br, CFG.cert.si, CFG.cert.go, CFG.cert.pl);
+    // Refresh cert page if open
+    if (S.user && document.getElementById('pg-certs').classList.contains('on')) renCerts();
+    // Refresh admin cert form if open
+    if (S.isAdmin) loadCertForm();
+  });
 }
 
 function logout() {
@@ -1306,7 +1339,6 @@ function previewSampleCert(tid) {
 }
 
 function closeCertOv() { g('certov').classList.add('hidden'); document.body.style.overflow=''; }
-function printCert()   { window.print(); }
 function downloadCert() {
   var cert=g('certwrap').querySelector('.certificate'); if (!cert) return;
   var btn=g('dlbtn'), orig=btn.textContent;
@@ -1510,8 +1542,44 @@ function loadCertForm() {
 }
 
 function saveCertCfg() {
-  CFG.cert={br:parseInt(g('cbr').value)||100,si:parseInt(g('csi').value)||300,go:parseInt(g('cgo').value)||500,pl:parseInt(g('cpl').value)||1000,org:g('corg').value.trim(),sn:g('csn').value.trim(),st:g('cst').value.trim()};
-  lsS('cfg',CFG); toast('Certificate settings saved!');
+  CFG.cert = {
+    br:  parseInt(g('cbr').value)  || 100,
+    si:  parseInt(g('csi').value)  || 300,
+    go:  parseInt(g('cgo').value)  || 500,
+    pl:  parseInt(g('cpl').value)  || 1000,
+    org: g('corg').value.trim(),
+    sn:  g('csn').value.trim(),
+    st:  g('cst').value.trim()
+  };
+  lsS('cfg', CFG); // cache locally as offline fallback
+
+  var statusEl = g('cert-save-status');
+  if (!GAS) {
+    if (statusEl) statusEl.textContent = '⚠️ No GAS URL — saved locally only (not synced)';
+    toast('Saved locally only. Set up GAS URL to sync across all devices.');
+    return;
+  }
+
+  if (statusEl) statusEl.textContent = '⏳ Saving to Google Sheets…';
+
+  gasPost('SAVE_SETTINGS', {
+    certBronze:    CFG.cert.br,
+    certSilver:    CFG.cert.si,
+    certGold:      CFG.cert.go,
+    certPlat:      CFG.cert.pl,
+    orgName:       CFG.cert.org,
+    signatoryName: CFG.cert.sn,
+    signatoryTitle:CFG.cert.st
+  }).then(function(r) {
+    if (r && r.success) {
+      if (statusEl) statusEl.textContent = '✅ Saved — live on all devices!';
+      toast('✅ Settings saved to Google Sheets — instantly live for all users!');
+      setTimeout(function(){ if(statusEl) statusEl.textContent=''; }, 4000);
+    } else {
+      if (statusEl) statusEl.textContent = '❌ GAS error — saved locally only';
+      toast('⚠️ GAS error: ' + ((r && r.message) || 'unknown'));
+    }
+  });
 }
 
 function changePass() {
