@@ -603,10 +603,11 @@ a{color:var(--navy2)}
         <button class="auth-tab" id="tab-signup" onclick="showAuthTab('signup')">Sign Up</button>
       </div>
 
-      <!-- ── SIGN IN panel (returning users — email only) ── -->
+      <!-- ── SIGN IN panel (returning users — email + password) ── -->
       <div id="panel-signin">
-        <p style="font-size:.82rem;color:var(--muted);margin-bottom:.9rem;line-height:1.5">Welcome back! Enter your registered email to access your progress.</p>
+        <p style="font-size:.82rem;color:var(--muted);margin-bottom:.9rem;line-height:1.5">Welcome back! Enter your email and password to access your progress.</p>
         <div class="fg"><label>Email Address *</label><input id="si-email" type="email" placeholder="priya@example.com" autocomplete="email" autocapitalize="none" inputmode="email"></div>
+        <div class="fg"><label>Password *</label><input id="si-pass" type="password" placeholder="Your password" autocomplete="current-password"></div>
         <div id="si-err" class="alert aerr hidden" style="margin-bottom:.5rem"></div>
         <button class="bp wfull" id="si-btn" onclick="doSignIn()">Sign In →</button>
         <p style="font-size:.76rem;color:var(--muted);text-align:center;margin-top:.75rem">New here? <a class="auth-link" onclick="showAuthTab('signup')">Create an account</a></p>
@@ -621,6 +622,8 @@ a{color:var(--navy2)}
         <div class="fg"><label>Email Address *</label><input id="su-email" type="email" placeholder="priya@example.com" autocomplete="email" autocapitalize="none" inputmode="email"></div>
         <div class="fg"><label>Institution / Organisation *</label><input id="su-inst" type="text" placeholder="e.g. IIT Delhi" autocomplete="organization"></div>
         <div class="fg"><label>Cohort / Batch <span style="font-weight:400;text-transform:none">(optional)</span></label><input id="su-cohort" type="text" placeholder="e.g. Batch 2025"></div>
+        <div class="fg"><label>Password * <span style="font-weight:400;text-transform:none">(min 6 characters)</span></label><input id="su-pass" type="password" placeholder="Create a password" autocomplete="new-password"></div>
+        <div class="fg"><label>Confirm Password *</label><input id="su-pass2" type="password" placeholder="Repeat your password" autocomplete="new-password"></div>
         <div id="su-err" class="alert aerr hidden" style="margin-bottom:.5rem"></div>
         <button class="bp wfull" id="su-btn" onclick="doSignUp()">Create Account →</button>
         <p style="font-size:.76rem;color:var(--muted);text-align:center;margin-top:.75rem">Already registered? <a class="auth-link" onclick="showAuthTab('signin')">Sign in instead</a></p>
@@ -965,7 +968,11 @@ function sj(s,d)  { try { return JSON.parse(s||'null')||d; } catch(e){ return d;
   if (u && u.email) {
     S.user = u;
     enterStudent();
-    if (GAS) { registerAndSync(); loadContent(); }
+    // Load content first, then background-sync progress from server
+    if (GAS) {
+      loadContent();
+      setTimeout(function(){ syncProgressFromServer(); }, 800);
+    }
     return;
   }
 
@@ -1075,50 +1082,36 @@ function refreshContent() {
 }
 
 // ── PROGRESS SYNC (multi-device) ─────────────────────────────────
-// registerAndSync: ONE call to GAS that registers the user AND returns their progress
-// Replaces separate USER_REGISTRATION + GET_USER_PROGRESS calls
-function registerAndSync() {
-  if (!GAS || !S.user) return;
-  var u = S.user;
-  gasPost('REGISTER_AND_SYNC', {
-    email:       u.email,
-    name:        u.name,
-    institution: u.institution || '',
-    cohort:      u.cohort      || 'Not specified',
-    registeredAt: u.registeredAt || new Date().toISOString()
-  })
+// syncProgressFromServer: re-fetches full progress using token auth
+// Replaces the old registerAndSync — no re-registration needed
+function syncProgressFromServer() {
+  var u = S.user; if (!u || !GAS) return;
+  gasGet('GET_USER_PROGRESS', 'email=' + encodeURIComponent(u.email) + '&token=' + encodeURIComponent(u.token || ''))
   .then(function(r) {
-    if (!r) {
-      console.error('REGISTER_AND_SYNC: no response — check GAS URL and deployment');
-      setBadge(false);
-      return;
-    }
-    if (!r.success) {
-      console.error('REGISTER_AND_SYNC failed:', r.message);
-      setBadge(false);
-      return;
-    }
-    var d = r.data || {};
-    // Merge server progress with any local actions done offline
-    var mergedVids = mergeArrays(S.user.vidsWatched, d.videosWatched);
-    var mergedArts = mergeArrays(S.user.artsRead,    d.articlesRead);
-    var serverPts  = d.totalPoints || 0;
-    // Use MAX: server may have more (other devices) or local may have more (offline actions)
-    var finalPts   = Math.max(serverPts, S.user.totalPts || 0);
-    S.user.vidsWatched = mergedVids;
-    S.user.artsRead    = mergedArts;
+    if (!r || !r.success || !r.data) return;
+    var d = r.data;
+    // Merge: keep local optimistic items plus anything from server (other devices)
+    S.user.vidsWatched = mergeArrays(u.vidsWatched, d.videosWatched);
+    S.user.artsRead    = mergeArrays(u.artsRead,    d.articlesRead);
     S.user.quizPassed  = (d.quizzesPassed || []).map(String);
-    S.user.totalPts    = finalPts;
+    S.user.totalPts    = Math.max(d.totalPoints || 0, u.totalPts || 0);
+    if (d.certificates && d.certificates.length) {
+      S.user.earnedCerts = d.certificates.map(function(c){ return c.tier; });
+    }
+    if (d.token) S.user.token = d.token;
     lsS('sess_user', S.user);
     setBadge(true);
     updateHeader();
     checkTierCerts(false);
     renDash(); renVids(); renArts();
     if (document.getElementById('pg-certs').classList.contains('on')) renCerts();
-    console.log('Synced from GAS — pts:', S.user.totalPts, 'videos:', S.user.vidsWatched.length, 'articles:', S.user.artsRead.length);
+    console.log('Synced from server — pts:', S.user.totalPts, 'videos:', S.user.vidsWatched.length, 'articles:', S.user.artsRead.length);
   });
 }
 
+// Legacy alias — keeps any old references working
+function registerAndSync() { syncProgressFromServer(); }
+// Replaces separate USER_REGISTRATION + GET_USER_PROGRESS calls
 function mergeArrays(local, server) {
   var result = (local || []).map(String);
   (server || []).forEach(function(id) {
@@ -1153,10 +1146,13 @@ function showAuthTab(tab) {
 // If not found, asks them to sign up first.
 function doSignIn() {
   var email = (g('si-email').value || '').trim().toLowerCase();
-  var err = g('si-err'), btn = g('si-btn');
+  var pass  = (g('si-pass') ? g('si-pass').value : '') || '';
+  var err   = g('si-err'), btn = g('si-btn');
+
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     showErr(err, 'Please enter a valid email address.'); return;
   }
+  if (!pass) { showErr(err, 'Please enter your password.'); return; }
 
   // Offline / no GAS: restore from localStorage cache
   if (!GAS) {
@@ -1169,28 +1165,24 @@ function doSignIn() {
 
   btn.disabled = true; btn.textContent = 'Signing in…';
 
-  gasGet('GET_USER_PROGRESS', 'email=' + encodeURIComponent(email))
+  gasPost('USER_LOGIN', { email: email, password: pass })
   .then(function(r) {
     btn.disabled = false; btn.textContent = 'Sign In →';
     if (!r || !r.success) {
-      showErr(err, 'Connection error. Please try again.'); return;
+      showErr(err, r ? r.message : 'Connection error. Please try again.'); return;
     }
-    if (r.data && r.data.isNewUser) {
-      showErr(err, 'No account found for this email. Please use Sign Up to create one.');
-      return;
-    }
-    // ✅ Existing user — build session from server data
     var d = r.data || {};
     S.user = {
-      name:        d.name || d.email || email,
+      name:        d.name        || email,
       email:       email,
       institution: d.institution || '',
       cohort:      d.cohort      || '',
+      token:       d.token       || '',
       vidsWatched: (d.videosWatched  || []).map(String),
       artsRead:    (d.articlesRead   || []).map(String),
       quizPassed:  (d.quizzesPassed  || []).map(String),
       totalPts:    d.totalPoints || 0,
-      earnedCerts: []
+      earnedCerts: (d.certificates  || []).map(function(c){ return c.tier; })
     };
     lsS('sess_user', S.user);
     enterStudent();
@@ -1198,6 +1190,9 @@ function doSignIn() {
     loadContent();
     checkTierCerts(false);
     console.log('Signed in:', email, '— pts:', S.user.totalPts);
+  }).catch(function(){
+    btn.disabled = false; btn.textContent = 'Sign In →';
+    showErr(err, 'Connection error. Please check your internet and try again.');
   });
 }
 
@@ -1205,10 +1200,12 @@ function doSignIn() {
 // Registers the user in Google Sheets, then enters the portal.
 // If email already registered, shows a friendly message to sign in instead.
 function doSignUp() {
-  var name   = (g('su-name').value   || '').trim();
-  var email  = (g('su-email').value  || '').trim().toLowerCase();
-  var inst   = (g('su-inst').value   || '').trim();
-  var cohort = (g('su-cohort').value || '').trim() || 'Not specified';
+  var name   = (g('su-name')   ? g('su-name').value   : '').trim();
+  var email  = (g('su-email')  ? g('su-email').value  : '').trim().toLowerCase();
+  var inst   = (g('su-inst')   ? g('su-inst').value   : '').trim();
+  var cohort = (g('su-cohort') ? g('su-cohort').value : '').trim() || 'Not specified';
+  var pass   = (g('su-pass')   ? g('su-pass').value   : '');
+  var pass2  = (g('su-pass2')  ? g('su-pass2').value  : '');
   var err = g('su-err'), btn = g('su-btn');
 
   if (!name)  { showErr(err, 'Please enter your full name.'); return; }
@@ -1216,15 +1213,16 @@ function doSignUp() {
     showErr(err, 'Please enter a valid email address.'); return;
   }
   if (!inst)  { showErr(err, 'Please enter your institution or organisation.'); return; }
-
-  S.user = {
-    name: name, email: email, institution: inst, cohort: cohort,
-    vidsWatched: [], artsRead: [], quizPassed: [], totalPts: 0, earnedCerts: [],
-    registeredAt: new Date().toISOString()
-  };
-  lsS('sess_user', S.user);
+  if (!pass || pass.length < 6) { showErr(err, 'Password must be at least 6 characters.'); return; }
+  if (pass !== pass2) { showErr(err, 'Passwords do not match.'); return; }
 
   if (!GAS) {
+    S.user = {
+      name: name, email: email, institution: inst, cohort: cohort, token: '',
+      vidsWatched: [], artsRead: [], quizPassed: [], totalPts: 0, earnedCerts: [],
+      registeredAt: new Date().toISOString()
+    };
+    lsS('sess_user', S.user);
     enterStudent();
     g('gas-banner').style.display = 'block';
     return;
@@ -1232,21 +1230,36 @@ function doSignUp() {
 
   btn.disabled = true; btn.textContent = 'Creating account…';
 
-  gasPost('REGISTER_AND_SYNC', {
-    email: email, name: name, institution: inst, cohort: cohort,
-    registeredAt: S.user.registeredAt
+  gasPost('USER_REGISTER', {
+    email: email, name: name, institution: inst, cohort: cohort, password: pass,
+    registeredAt: new Date().toISOString()
   }).then(function(r) {
     btn.disabled = false; btn.textContent = 'Create Account →';
-    if (r && !r.data.isNewUser) {
-      // Email already registered — redirect to sign in
-      showErr(err, 'This email is already registered. Please use Sign In instead.');
-      setTimeout(function() { showAuthTab('signin'); g('si-email').value = email; }, 1800);
+    if (!r || !r.success) {
+      showErr(err, r ? r.message : 'Registration failed. Please try again.');
       return;
     }
+    var d = r.data || {};
+    S.user = {
+      name:        d.name        || name,
+      email:       email,
+      institution: d.institution || inst,
+      cohort:      d.cohort      || cohort,
+      token:       d.token       || '',
+      vidsWatched: [],
+      artsRead:    [],
+      quizPassed:  [],
+      totalPts:    0,
+      earnedCerts: []
+    };
+    lsS('sess_user', S.user);
     enterStudent();
     fetchSettingsFromGAS();
     loadContent();
     console.log('Signed up:', email);
+  }).catch(function(){
+    btn.disabled = false; btn.textContent = 'Create Account →';
+    showErr(err, 'Connection error. Please try again.');
   });
 }
 
@@ -1509,15 +1522,15 @@ function markDone(id, type, title) {
   if (!GAS) return;
   var act = type==='video' ? 'VIDEO_WATCHED' : 'ARTICLE_READ';
   var payload = type==='video'
-    ? { email:u.email, name:u.name, videoId:String(id), videoTitle:title||'',
+    ? { email:u.email, name:u.name, token:u.token||'', videoId:String(id), videoTitle:title||'',
         institution:u.institution, cohort:u.cohort||'', timestamp:new Date().toISOString() }
-    : { email:u.email, name:u.name, articleId:String(id), articleTitle:title||'',
+    : { email:u.email, name:u.name, token:u.token||'', articleId:String(id), articleTitle:title||'',
         institution:u.institution, cohort:u.cohort||'', timestamp:new Date().toISOString() };
 
   gasPost(act, payload).then(function(r) {
-    if (!r) { console.error('markDone: no GAS response for', act); return; }
+    if (!r || !r.success) { console.error('markDone: failed for', act, r); return; }
     // Re-sync to get authoritative total from Google Sheets
-    setTimeout(function() { registerAndSync(); }, 1000);
+    setTimeout(function() { syncProgressFromServer(); }, 1200);
   });
 }
 
@@ -1578,6 +1591,13 @@ function checkTierCerts(showToast) {
       earned.push(t.id);
       lsS('sess_user', u);
       if (showToast) showTierUnlock(t);
+      // Record certificate server-side so it persists across devices
+      if (GAS && u.token) {
+        gasPost('AWARD_CERT', {
+          email: u.email, name: u.name, token: u.token,
+          tier: t.id, totalPoints: pts, institution: u.institution || ''
+        }).catch(function(e){ console.warn('AWARD_CERT failed:', e); });
+      }
     }
   });
 }
@@ -1744,6 +1764,7 @@ function finishQz() {
   var score=QS.ans.filter(function(a){return a.ok;}).length;
   var earned=QS.ans.reduce(function(s,a){return s+(a.pts||0);},0);
   var pct=Math.round(score/total*100);
+  var passed = pct >= 60;
   var u=S.user;
   if (!u.quizPassed) u.quizPassed=[];
   if (u.quizPassed.map(String).indexOf(String(QS.qz.contentId))<0) u.quizPassed.push(String(QS.qz.contentId));
@@ -1751,16 +1772,17 @@ function finishQz() {
   lsS('sess_user',u); updateHeader(); checkTierCerts(true);
 
   if (GAS) gasPost('QUIZ_COMPLETED', {
-    email: u.email, name: u.name, contentType: 'quiz',
+    email: u.email, name: u.name, token: u.token||'',
     contentId: QS.qz.contentId, contentTitle: 'Quiz',
     score: score, pointsEarned: earned, percentage: pct + '%',
     grade: pct >= 80 ? 'A' : pct >= 60 ? 'B' : 'C',
-    passed: pct >= 60 ? 'Yes' : 'No',
+    passed: passed ? 'Yes' : 'No',
     institution: u.institution, cohort: u.cohort || '',
     timestamp: new Date().toISOString()
   }).then(function(r) {
-    if (!r) { console.error('QUIZ_COMPLETED: no GAS response'); return; }
-    setTimeout(function() { registerAndSync(); }, 1000);
+    if (r && r.success) {
+      setTimeout(function() { syncProgressFromServer(); }, 1200);
+    }
   });
 
   var grade=pct>=80?'Excellent! 🌟':pct>=60?'Good work! 👍':'Keep practising! 💪';
@@ -1928,6 +1950,8 @@ document.getElementById('co-ok').onclick=function(){if(coCb)coCb();closeCo();};
 // ── KEYBOARD ───────────────────────────────────────────────────────
 ['wco','wi','we'].forEach(function(id){ var el=g(id); if(el)el.addEventListener('keydown',function(e){if(e.key==='Enter')startLearning();}); });
 g('ap').addEventListener('keydown',function(e){if(e.key==='Enter')doAdminLogin();});
+var _siPass=g('si-pass'); if(_siPass) _siPass.addEventListener('keydown',function(e){if(e.key==='Enter')doSignIn();});
+var _suPass2=g('su-pass2'); if(_suPass2) _suPass2.addEventListener('keydown',function(e){if(e.key==='Enter')doSignUp();});
 
 // ── UTILS ──────────────────────────────────────────────────────────
 function g(id){return document.getElementById(id);}
